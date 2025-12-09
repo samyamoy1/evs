@@ -73,47 +73,75 @@ export async function POST(request: NextRequest) {
     const pollutionList = pollutionData.list || []
 
     const predictions: any[] = []
-    const seenDates = new Set<string>()
+    const dailyData = new Map<string, any[]>()
 
+    // Group all forecasts by date
     weatherData.list.forEach((forecast: any) => {
       const date = new Date(forecast.dt * 1000).toISOString().split("T")[0]
-
-      if (!seenDates.has(date) && predictions.length < 5) {
-        seenDates.add(date)
-        const forecastDate = new Date(forecast.dt * 1000)
-        const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-
-        const pollutionForecasts = pollutionList.filter((poll: any) => {
-          const pollDate = new Date(poll.dt * 1000).toISOString().split("T")[0]
-          return pollDate === date
-        })
-
-        const pollutionIndex = pollutionForecasts.length > 0 ? pollutionForecasts[0] : pollutionList[0]
-        const components = pollutionIndex?.components || {}
-
-        const pm25 = components.pm2_5 || 0
-        const pm10 = components.pm10 || 0
-        const spm = Math.round((pm10 + pm25) / 2)
-
-        const aqi = calculateEPAAQI(pm25, pm10)
-        const aqiCategory = getAQICategory(aqi)
-
-        predictions.push({
-          day: days[forecastDate.getDay()],
-          date: date,
-          temp: Math.round(forecast.main.temp_max),
-          tempMin: Math.round(forecast.main.temp_min),
-          feelsLike: Math.round(forecast.main.feels_like),
-          rainfall: Math.round((forecast.rain?.["3h"] || 0) * 8),
-          humidity: forecast.main.humidity || 0,
-          windSpeed: Math.round(forecast.wind.speed || 0),
-          spm: spm,
-          aqi: aqi,
-          aqiCategory: aqiCategory,
-          pm25: Math.round(pm25),
-          pm10: Math.round(pm10),
-        })
+      if (!dailyData.has(date)) {
+        dailyData.set(date, [])
       }
+      dailyData.get(date)!.push(forecast)
+    })
+
+    // Process each day to get accurate max/min temperatures
+    let dayCount = 0
+    dailyData.forEach((forecasts: any[], date: string) => {
+      if (dayCount >= 5) return
+
+      const forecastDate = new Date(forecasts[0].dt * 1000)
+      const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+
+      // Find actual max and min temperatures for the day
+      const temps = forecasts.map((f: any) => f.main.temp)
+      const tempMax = Math.round(Math.max(...temps))
+      const tempMin = Math.round(Math.min(...temps))
+      const feelsLike = Math.round(forecasts[0].main.feels_like)
+
+      // Get pollution data for this date
+      const pollutionForecasts = pollutionList.filter((poll: any) => {
+        const pollDate = new Date(poll.dt * 1000).toISOString().split("T")[0]
+        return pollDate === date
+      })
+
+      const pollutionIndex = pollutionForecasts.length > 0 ? pollutionForecasts[0] : pollutionList[0]
+      const components = pollutionIndex?.components || {}
+
+      const pm25 = components.pm2_5 || 0
+      const pm10 = components.pm10 || 0
+      const spm = Math.round((pm10 + pm25) / 2)
+
+      const aqi = calculateEPAAQI(pm25, pm10)
+      const aqiCategory = getAQICategory(aqi)
+
+      // Calculate total rainfall for the day
+      const totalRainfall = Math.round(
+        forecasts.reduce((sum: number, f: any) => sum + (f.rain?.["3h"] || 0) * 8, 0) / forecasts.length,
+      )
+
+      // Get average humidity and max wind speed
+      const humidity = Math.round(
+        forecasts.reduce((sum: number, f: any) => sum + f.main.humidity, 0) / forecasts.length,
+      )
+      const windSpeed = Math.round(Math.max(...forecasts.map((f: any) => f.wind.speed || 0)))
+
+      predictions.push({
+        day: days[forecastDate.getDay()],
+        date: date,
+        temp: tempMax,
+        tempMin: tempMin,
+        feelsLike: feelsLike,
+        rainfall: totalRainfall,
+        humidity: humidity,
+        windSpeed: windSpeed,
+        spm: spm,
+        aqi: aqi,
+        aqiCategory: aqiCategory,
+        pm25: Math.round(pm25),
+        pm10: Math.round(pm10),
+      })
+
+      dayCount++
     })
 
     return NextResponse.json({
